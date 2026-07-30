@@ -1,0 +1,6 @@
+[submodule "llama.cpp"]
+	path = llama.cpp
+	url = https://github.com/ggml-org/llama.cpp
+[submodule "lm-evaluation-harness"]
+	path = lm-evaluation-harness
+	url = https://github.com/EleutherAI/lm-evaluation-harness/
