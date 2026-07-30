@@ -29,6 +29,6 @@ pip install torch --index-url https://download.pytorch.org/whl/cpu
 
 # 2. install lm-eval editable from source
 echo "[setup] Installing lm-evaluation-harness (editable) from $LMEVAL_SRC"
-pip install -e "$LMEVAL_SRC"
-
+#pip install -e "$LMEVAL_SRC"
+pip install -e "$LMEVAL_SRC[api]"
 echo "[setup] Done. Activate with:  source active_environment.sh"
