@@ -1,8 +1,8 @@
-# Source this file to load the environment:  source active_environment.sh
+# Source this file to load the environment:  source scripts/active_environment.sh
 
-# Resolve the repo root (directory containing this script)
+# Resolve the repo root (parent of the scripts/ directory containing this script)
 _THIS="${BASH_SOURCE[0]:-$0}"
-export REPO_ROOT="$(cd "$(dirname "$_THIS")" && pwd)"
+export REPO_ROOT="$(cd "$(dirname "$_THIS")/.." && pwd)"
 
 # llama.cpp source + build locations
 export LLAMACPP_SRC="$REPO_ROOT/llama.cpp"

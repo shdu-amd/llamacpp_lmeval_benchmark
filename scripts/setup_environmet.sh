@@ -5,11 +5,11 @@
 # 2. install lm-eval (editable) from source in ./lm-evaluation-harness
 # 3. install pytorch
 #
-# Usage:  ./setup_environmet.sh
+# Usage:  ./scripts/setup_environmet.sh
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 VENV_DIR="$REPO_ROOT/.venv"
 LMEVAL_SRC="$REPO_ROOT/lm-evaluation-harness"
 

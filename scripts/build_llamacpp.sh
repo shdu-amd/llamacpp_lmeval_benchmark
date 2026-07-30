@@ -4,11 +4,11 @@
 # Reads LLAMACPP_SRC and LLAMACPP_BUILD_DIR from the environment
 # (see active_environment.sh). Falls back to sensible defaults.
 #
-# Usage:  source active_environment.sh && ./build_llamacpp.sh
+# Usage:  source scripts/active_environment.sh && ./scripts/build_llamacpp.sh
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 LLAMACPP_SRC="${LLAMACPP_SRC:-$REPO_ROOT/llama.cpp}"
 LLAMACPP_BUILD_DIR="${LLAMACPP_BUILD_DIR:-$LLAMACPP_SRC/build}"
 
