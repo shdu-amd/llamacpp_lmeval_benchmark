@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     g = p.add_argument_group("generation params")
     g.add_argument("--temperature", type=float, default=0.0,
                    help="Sampling temperature (0 = greedy; >0 disables the cache).")
-    g.add_argument("--max-tokens", type=int, default=16300,
+    g.add_argument("--max-tokens", type=int, default=2048,
                    help="Max tokens to generate (lm-eval max_gen_toks).")
     g.add_argument("--seed", type=int, default=1234,
                    help="Generation RNG seed.")

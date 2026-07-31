@@ -22,6 +22,11 @@
 #   ./scripts/launch_llama_server.sh --model models/foo.gguf --parallel 8 --ctx-per-slot 16384
 # Passing --ctx-size explicitly overrides this (per-slot becomes ctx-size/parallel).
 #
+# Thinking is disabled by default (--reasoning off) so reasoning models put their
+# answer in message.content, which lm-eval reads. With thinking on, a small model
+# can ruminate past --max-tokens and never close </think>, returning empty content
+# (scored [invalid]). Re-enable with: --reasoning on (or auto).
+#
 # Then, in another shell, point the eval at it:
 #   python run_model_bench.py --base-url http://127.0.0.1:8080 \
 #       --model-name Qwen3.5-0.8B --benchmark mmlu_pro --limit 100
@@ -29,10 +34,14 @@
 set -euo pipefail
 
 MODEL=""
-PARALLEL=8               # number of concurrent request slots
+PARALLEL=16               # number of concurrent request slots
 CTX_PER_SLOT=8192       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
 CTX_SIZE=""              # if set explicitly, overrides CTX_PER_SLOT * PARALLEL
 N_GPU_LAYERS=-1          # -1 = offload all layers to GPU if possible
+REASONING="off"         # thinking mode: off|on|auto. off so reasoning models emit
+                        # the answer in message.content (lm-eval reads content, not
+                        # reasoning_content); with thinking on, small models can
+                        # ruminate past the token limit and return empty content.
 HOST="${LLAMACPP_HOST:-127.0.0.1}"
 PORT="${LLAMACPP_PORT:-8080}"
 SERVER_BIN="${LLAMACPP_SERVER_BIN:-}"
@@ -49,6 +58,7 @@ while [ $# -gt 0 ]; do
         --ctx-per-slot)  CTX_PER_SLOT="$2"; shift 2 ;;
         --ctx-size)      CTX_SIZE="$2"; shift 2 ;;
         --n-gpu-layers)  N_GPU_LAYERS="$2"; shift 2 ;;
+        --reasoning)     REASONING="$2"; shift 2 ;;
         --host)          HOST="$2"; shift 2 ;;
         --port)          PORT="$2"; shift 2 ;;
         --server-bin)    SERVER_BIN="$2"; shift 2 ;;
@@ -89,6 +99,7 @@ echo "[serve] model:         $MODEL"
 echo "[serve] parallel:      $PARALLEL"
 echo "[serve] ctx-size:      $CTX_SIZE  (~$(( CTX_SIZE / PARALLEL )) per slot)"
 echo "[serve] n-gpu-layers:  $N_GPU_LAYERS"
+echo "[serve] reasoning:     $REASONING"
 echo "[serve] listening on:  http://$HOST:$PORT"
 echo "[serve] base-url ->    http://$HOST:$PORT   (pass this to run_model_bench.py --base-url)"
 
@@ -102,4 +113,5 @@ exec "$SERVER_BIN" \
     --port "$PORT" \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$N_GPU_LAYERS" \
+    --reasoning "$REASONING" \
     --parallel "$PARALLEL" 

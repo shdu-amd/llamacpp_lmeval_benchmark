@@ -199,7 +199,7 @@ class LMEvalLiveRunner:
             cache_requests=samples is None,
             apply_chat_template=True,
             fewshot_as_multiturn=True,
-            gen_kwargs=self.gen_kwargs or None,
+            gen_kwargs=self.gen_kwargs if self.gen_kwargs else None,
             log_samples=True,
             random_seed=self.random_seed,
             fewshot_random_seed=self.fewshot_seed,
