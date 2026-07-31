@@ -23,7 +23,7 @@
 set -euo pipefail
 
 MODEL=""
-CTX_SIZE=16384
+CTX_SIZE=65536
 N_GPU_LAYERS=-1          # -1 = offload all layers to GPU if possible
 HOST="${LLAMACPP_HOST:-127.0.0.1}"
 PORT="${LLAMACPP_PORT:-8080}"
@@ -84,4 +84,4 @@ exec "$SERVER_BIN" \
     --port "$PORT" \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$N_GPU_LAYERS" \
-    --parallel 2
+    --parallel 4

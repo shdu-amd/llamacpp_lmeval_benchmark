@@ -1,1 +1,1 @@
-python3 run_model_bench.py --base-url http://127.0.0.1:8080 --model-name Qwen3.5-0.8b-Q4_1  --num-concurrent 2 --benchmark mmlu_pro --limit 10 --checkpoint-every 1 --random-seed 0
+python3 run_model_bench.py --base-url http://127.0.0.1:8080 --model-name Qwen3.5-0.8b-Q4_1  --num-concurrent 4 --benchmark mmlu_pro --limit 10 --checkpoint-every 1 --random-seed 0

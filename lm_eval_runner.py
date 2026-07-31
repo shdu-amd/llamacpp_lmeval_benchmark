@@ -190,7 +190,13 @@ class LMEvalLiveRunner:
             limit=limit,
             samples=samples,
             use_cache=self.cache_path,
-            cache_requests=True,
+            # The request-building cache keys on task/fewshot/template but NOT on
+            # the sample set, and only rebuilds the full dataset on the `limit`
+            # path. On the `samples` path (chunked live scoring) it caches just the
+            # current prefix, so a later, longer chunk loads too few instances and
+            # postprocessing IndexErrors on the missing docs. Skip it when
+            # subsampling; generation is still cached content-wise via use_cache.
+            cache_requests=samples is None,
             apply_chat_template=True,
             fewshot_as_multiturn=True,
             gen_kwargs=self.gen_kwargs or None,
