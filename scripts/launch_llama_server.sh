@@ -29,8 +29,8 @@
 set -euo pipefail
 
 MODEL=""
-PARALLEL=4               # number of concurrent request slots
-CTX_PER_SLOT=16384       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
+PARALLEL=8               # number of concurrent request slots
+CTX_PER_SLOT=8192       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
 CTX_SIZE=""              # if set explicitly, overrides CTX_PER_SLOT * PARALLEL
 N_GPU_LAYERS=-1          # -1 = offload all layers to GPU if possible
 HOST="${LLAMACPP_HOST:-127.0.0.1}"
@@ -102,4 +102,4 @@ exec "$SERVER_BIN" \
     --port "$PORT" \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$N_GPU_LAYERS" \
-    --parallel "$PARALLEL"
+    --parallel "$PARALLEL" 
