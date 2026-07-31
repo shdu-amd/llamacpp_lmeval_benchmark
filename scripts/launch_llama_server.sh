@@ -16,6 +16,12 @@
 #   ./scripts/launch_llama_server.sh --model models/Qwen3.5-0.8B-Q4_1.gguf
 #   ./scripts/launch_llama_server.sh --model models/foo.gguf --ctx-size 8192 --n-gpu-layers 0
 #
+# By default the total --ctx-size is sized so each of the --parallel slots gets
+# --ctx-per-slot tokens of KV cache (default 4 slots x 16384 = 65536). Override
+# per-slot size or slot count directly:
+#   ./scripts/launch_llama_server.sh --model models/foo.gguf --parallel 8 --ctx-per-slot 16384
+# Passing --ctx-size explicitly overrides this (per-slot becomes ctx-size/parallel).
+#
 # Then, in another shell, point the eval at it:
 #   python run_model_bench.py --base-url http://127.0.0.1:8080 \
 #       --model-name Qwen3.5-0.8B --benchmark mmlu_pro --limit 100
@@ -23,7 +29,9 @@
 set -euo pipefail
 
 MODEL=""
-CTX_SIZE=65536
+PARALLEL=4               # number of concurrent request slots
+CTX_PER_SLOT=16384       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
+CTX_SIZE=""              # if set explicitly, overrides CTX_PER_SLOT * PARALLEL
 N_GPU_LAYERS=-1          # -1 = offload all layers to GPU if possible
 HOST="${LLAMACPP_HOST:-127.0.0.1}"
 PORT="${LLAMACPP_PORT:-8080}"
@@ -37,6 +45,8 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)         MODEL="$2"; shift 2 ;;
+        --parallel)      PARALLEL="$2"; shift 2 ;;
+        --ctx-per-slot)  CTX_PER_SLOT="$2"; shift 2 ;;
         --ctx-size)      CTX_SIZE="$2"; shift 2 ;;
         --n-gpu-layers)  N_GPU_LAYERS="$2"; shift 2 ;;
         --host)          HOST="$2"; shift 2 ;;
@@ -56,6 +66,13 @@ if [ ! -f "$MODEL" ]; then
     exit 2
 fi
 
+# Total ctx is split evenly across --parallel slots by llama.cpp, so to give each
+# slot CTX_PER_SLOT tokens we request CTX_PER_SLOT * PARALLEL total. An explicit
+# --ctx-size overrides this (per-slot then becomes CTX_SIZE / PARALLEL).
+if [ -z "$CTX_SIZE" ]; then
+    CTX_SIZE=$(( CTX_PER_SLOT * PARALLEL ))
+fi
+
 # Resolve the server binary: explicit --server-bin, else from the build dir.
 if [ -z "$SERVER_BIN" ]; then
     if [ -n "${LLAMACPP_BUILD_DIR:-}" ] && [ -x "$LLAMACPP_BUILD_DIR/bin/llama-server" ]; then
@@ -69,7 +86,8 @@ fi
 
 echo "[serve] binary:        $SERVER_BIN"
 echo "[serve] model:         $MODEL"
-echo "[serve] ctx-size:      $CTX_SIZE"
+echo "[serve] parallel:      $PARALLEL"
+echo "[serve] ctx-size:      $CTX_SIZE  (~$(( CTX_SIZE / PARALLEL )) per slot)"
 echo "[serve] n-gpu-layers:  $N_GPU_LAYERS"
 echo "[serve] listening on:  http://$HOST:$PORT"
 echo "[serve] base-url ->    http://$HOST:$PORT   (pass this to run_model_bench.py --base-url)"
@@ -84,4 +102,4 @@ exec "$SERVER_BIN" \
     --port "$PORT" \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$N_GPU_LAYERS" \
-    --parallel 4
+    --parallel "$PARALLEL"
