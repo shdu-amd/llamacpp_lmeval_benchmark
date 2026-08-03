@@ -54,6 +54,26 @@ def atomic_write_json(path: str, payload: Dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
+def append_json_line(path: str, payload: Dict[str, Any]) -> None:
+    """Append one checkpoint to a pretty-printed JSON array.
+
+    Kept as a single valid, indented JSON document (not JSONL) so the file stays
+    human-readable, while preserving the full checkpoint-to-checkpoint history
+    for plotting score continuation across a run.
+    """
+    history: List[Any] = []
+    if os.path.exists(path):
+        try:
+            with open(path) as f:
+                history = json.load(f)
+            if not isinstance(history, list):
+                history = [history]
+        except (json.JSONDecodeError, OSError):
+            history = []
+    history.append(payload)
+    atomic_write_json(path, history)
+
+
 # --------------------------------------------------------------------------- #
 # Runner
 # --------------------------------------------------------------------------- #
@@ -75,7 +95,8 @@ class LMEvalLiveRunner:
         checkpoint_every: int = 25,
         num_concurrent: int = 1,
         gen_kwargs: str = "",
-        request_timeout: float = 600.0,
+        request_timeout: float = 900.0,
+        max_retries: int = 10,
         api_key: Optional[str] = None,
         random_seed: int = 0,
         fewshot_seed: int = 1234,
@@ -90,6 +111,7 @@ class LMEvalLiveRunner:
         self.num_concurrent = max(1, num_concurrent)
         self.gen_kwargs = gen_kwargs
         self.request_timeout = request_timeout
+        self.max_retries = max(1, max_retries)
         self.api_key = api_key
         self.random_seed = random_seed
         self.fewshot_seed = fewshot_seed
@@ -103,9 +125,11 @@ class LMEvalLiveRunner:
         # Populated by _prepare().
         self._tm = None
         self._leaf_tasks: List[str] = []
-        # Per-leaf shuffled doc-id order (seeded). Only built when subsampling
-        # (target_limit set); None means "test the full dataset in native order".
+        # Per-leaf shuffled doc-id order (seeded), built in _prepare(); a growing
+        # prefix is fed to each chunk. None only before _prepare() runs.
         self._perms: Optional[Dict[str, List[int]]] = None
+        # True when --limit was omitted and the target was auto-set to full.
+        self._auto_full = False
 
     # ---- setup + guard ---------------------------------------------------- #
     def _prepare(self) -> None:
@@ -138,26 +162,34 @@ class LMEvalLiveRunner:
 
         self._leaf_tasks = list(leaves)
 
-        # Randomly subsample when a target is set. Each leaf gets its own seeded
-        # permutation of doc ids; a growing prefix of it is fed to each chunk via
-        # `samples=`, so the running score is over a random (not head-of-file)
-        # subset. One RNG seeded by random_seed, drawn in a fixed (sorted) order,
-        # keeps the permutations reproducible across re-runs / resume.
-        if self.target_limit is not None:
-            rng = random.Random(self.random_seed)
-            perms: Dict[str, List[int]] = {}
-            for name in sorted(leaves):
-                k = len(leaves[name].eval_docs)
-                order = list(range(k))
-                rng.shuffle(order)
-                perms[name] = order[: min(self.target_limit, k)]
-            self._perms = perms
+        # When no --limit is given, run the *full* dataset but still checkpoint:
+        # the per-subtask target becomes the largest leaf's doc count, so the
+        # ladder climbs high enough to cover every doc. Smaller leaves saturate
+        # early (their shuffled prefix is capped at their own size below).
+        leaf_sizes = {name: len(leaves[name].eval_docs) for name in leaves}
+        if self.target_limit is None:
+            self._auto_full = True
+            self.target_limit = max(leaf_sizes.values(), default=0)
+
+        # Each leaf gets its own seeded permutation of doc ids; a growing prefix
+        # is fed to each chunk via `samples=`, so the running score is over a
+        # random (not head-of-file) subset. One RNG seeded by random_seed, drawn
+        # in sorted leaf order, keeps permutations reproducible across resume.
+        rng = random.Random(self.random_seed)
+        perms: Dict[str, List[int]] = {}
+        for name in sorted(leaves):
+            k = leaf_sizes[name]
+            order = list(range(k))
+            rng.shuffle(order)
+            perms[name] = order[: min(self.target_limit, k)]
+        self._perms = perms
 
     def _model_args(self) -> str:
         parts = [
             f"base_url={self.base_url}/v1/chat/completions",
             f"model={self.model_name}",
             f"num_concurrent={self.num_concurrent}",
+            f"max_retries={self.max_retries}",
             "tokenized_requests=False",
         ]
         if self.request_timeout:
@@ -176,8 +208,9 @@ class LMEvalLiveRunner:
             os.environ.setdefault("OPENAI_API_KEY", "sk-no-key-required")
 
         # When subsampling, feed a growing prefix of each leaf's shuffled doc
-        # ids via `samples` (mutually exclusive with `limit`). Full runs pass
-        # `limit=None` and let lm-eval walk the whole dataset in native order.
+            # ids via `samples` (mutually exclusive with `limit`). Full runs also
+            # use this path: "full" means the shuffled prefix reaches each leaf's
+            # entire doc set, not native-order traversal via `limit=`.
         samples = None
         if self._perms is not None:
             samples = {name: ids[:limit] for name, ids in self._perms.items()}
@@ -196,7 +229,7 @@ class LMEvalLiveRunner:
             # current prefix, so a later, longer chunk loads too few instances and
             # postprocessing IndexErrors on the missing docs. Skip it when
             # subsampling; generation is still cached content-wise via use_cache.
-            cache_requests=samples is None,
+            cache_requests=False,
             apply_chat_template=True,
             fewshot_as_multiturn=True,
             gen_kwargs=self.gen_kwargs if self.gen_kwargs else None,
@@ -238,12 +271,17 @@ class LMEvalLiveRunner:
     def _envelope(
         self, results: Dict[str, Any], status: str, current_limit: int
     ) -> Dict[str, Any]:
-        done_per_subtask = current_limit
         n_subtasks = max(1, len(self._leaf_tasks))
-        completed = done_per_subtask * n_subtasks
-        total = (
-            (self.target_limit or 0) * n_subtasks if self.target_limit else None
-        )
+        # Count real docs, not current_limit * n_subtasks: once a small leaf runs
+        # out its prefix stops growing, so a flat multiply would overcount.
+        if self._perms:
+            total = sum(len(ids) for ids in self._perms.values())
+            completed = sum(
+                min(current_limit, len(ids)) for ids in self._perms.values()
+            )
+        else:
+            total = (self.target_limit or 0) * n_subtasks if self.target_limit else None
+            completed = current_limit * n_subtasks
         elapsed = time.time() - self._start_ts
         rate = completed / elapsed if elapsed > 0 else 0.0
         eta = ((total - completed) / rate) if (rate > 0 and total) else None
@@ -283,41 +321,46 @@ class LMEvalLiveRunner:
             {
                 "task": self.task,
                 "leaf_tasks": self._leaf_tasks,
-                # Shuffled doc-id order per leaf (None for full runs). lm-eval
-                # re-enumerates sampled docs from 0, so this is the only record
-                # mapping an output sample back to its true dataset index.
+                # Shuffled doc-id order per leaf. lm-eval re-enumerates sampled
+                # docs from 0, so this is the only record mapping an output
+                # sample back to its true dataset index.
                 "sample_doc_ids": self._perms,
                 **self.run_meta,
             },
         )
 
         n_subtasks = len(self._leaf_tasks)
+        limit_desc = (
+            f"full (auto, max {self.target_limit}/subtask)"
+            if self._auto_full
+            else f"{self.target_limit}/subtask"
+        )
         print(
             f"[lm-eval] task={self.task} ({n_subtasks} subtask(s)), "
-            f"limit/subtask={self.target_limit or 'full'}, "
+            f"limit/subtask={limit_desc}, "
             f"checkpoint every {self.checkpoint_every}/subtask, "
             f"num_concurrent={self.num_concurrent}",
             flush=True,
         )
-        print(f"[lm-eval] cache: {self.cache_path}  (chunked re-runs reuse it)",
-              flush=True)
 
-        # Build the ladder of per-subtask limits. Without a target we do a single
-        # full pass (no chunking possible — we don't know the total up front).
-        if self.target_limit is None:
-            ladder = [None]
-        else:
-            ladder = list(
-                range(self.checkpoint_every, self.target_limit + 1,
-                      self.checkpoint_every)
-            )
-            if not ladder or ladder[-1] != self.target_limit:
-                ladder.append(self.target_limit)
+        # Ladder of per-subtask limits: checkpoint_every, 2x, 3x, ..., target.
+        # Each rung re-runs the growing prefix; generations are served from the
+        # sqlite cache so only the newly added docs actually hit the server.
+        ladder = list(
+            range(self.checkpoint_every, self.target_limit + 1,
+                  self.checkpoint_every)
+        )
+        if not ladder or ladder[-1] != self.target_limit:
+            ladder.append(self.target_limit)
 
         last_results: Dict[str, Any] = {}
+        current_limit = 0
+        current_chunk = 0
         try:
             for i, limit in enumerate(ladder):
                 is_last = i == len(ladder) - 1
+                current_chunk = i + 1
+                current_limit = limit or 0
                 lbl = "full" if limit is None else f"{limit}/subtask"
                 print(f"[lm-eval] chunk {i + 1}/{len(ladder)} -> limit={lbl}",
                       flush=True)
@@ -326,8 +369,8 @@ class LMEvalLiveRunner:
                 last_results = results
 
                 status = "done" if is_last else "running"
-                env = self._envelope(results, status, limit or 0)
-                atomic_write_json(self.progress_path, env)
+                env = self._envelope(results, status, current_limit)
+                append_json_line(self.progress_path, env)
                 if is_last:
                     self._write_samples(samples)
                     atomic_write_json(self.final_path, env)
@@ -336,9 +379,14 @@ class LMEvalLiveRunner:
                 head_str = f"  {head}" if head else ""
                 print(f"[lm-eval] chunk {i + 1} done{head_str}", flush=True)
         except BaseException as e:
-            env = self._envelope(last_results, "failed", 0)
-            env["error"] = f"{type(e).__name__}: {e}"
-            atomic_write_json(self.progress_path, env)
+            env = self._envelope(last_results, "failed", current_limit)
+            env["error"] = f"{type(e).__name__}: {e!r}"
+            env["failed_chunk"] = {
+                "index": current_chunk,
+                "limit_per_subtask": current_limit,
+                "total_chunks": len(ladder),
+            }
+            append_json_line(self.progress_path, env)
             raise
 
         return self._envelope(last_results, "done", ladder[-1] or 0)

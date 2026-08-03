@@ -34,14 +34,31 @@
 set -euo pipefail
 
 MODEL=""
-PARALLEL=16               # number of concurrent request slots
+PARALLEL=24               # number of concurrent request slots
 CTX_PER_SLOT=8192       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
 CTX_SIZE=""              # if set explicitly, overrides CTX_PER_SLOT * PARALLEL
 N_GPU_LAYERS=-1          # -1 = offload all layers to GPU if possible
+NO_MMAP=1               # 1 = pass --no-mmap. On this Strix Halo APU the BIOS carves
+                        # most DRAM into the GPU pool, leaving a small CPU-visible
+                        # RAM pool. Default mmap keeps the whole GGUF mapped there as
+                        # page cache (double-counting the weights + swapping), so we
+                        # disable it and load tensors straight into the VRAM pool.
+                        # Set --mmap to re-enable on machines with plenty of host RAM.
 REASONING="off"         # thinking mode: off|on|auto. off so reasoning models emit
                         # the answer in message.content (lm-eval reads content, not
                         # reasoning_content); with thinking on, small models can
                         # ruminate past the token limit and return empty content.
+CACHE_RAM=0             # llama.cpp -cram/--cache-ram (MiB). The server saves idle
+                        # slots' KV state into this RAM prompt cache; with many
+                        # --parallel slots on unique benchmark prompts that cache
+                        # only thrashes (save/evict/restore stalls of several
+                        # seconds -> clients time out / disconnect). 0 disables it
+                        # for near-zero-hit sweeps; -1 = no limit, >0 = MiB cap.
+FLASH_ATTN="on"         # llama.cpp -fa/--flash-attn (on|off|auto). Shrinks the KV
+                        # cache and cuts attention bandwidth, which directly eases
+                        # the memory pressure from many --parallel slots on this
+                        # APU. Default 'on'; set 'auto' to let llama.cpp decide, or
+                        # 'off' to compare if a backend kernel is slower.
 HOST="${LLAMACPP_HOST:-127.0.0.1}"
 PORT="${LLAMACPP_PORT:-8080}"
 SERVER_BIN="${LLAMACPP_SERVER_BIN:-}"
@@ -58,7 +75,11 @@ while [ $# -gt 0 ]; do
         --ctx-per-slot)  CTX_PER_SLOT="$2"; shift 2 ;;
         --ctx-size)      CTX_SIZE="$2"; shift 2 ;;
         --n-gpu-layers)  N_GPU_LAYERS="$2"; shift 2 ;;
+        --no-mmap)       NO_MMAP=1; shift ;;
+        --mmap)          NO_MMAP=0; shift ;;
         --reasoning)     REASONING="$2"; shift 2 ;;
+        --cache-ram)     CACHE_RAM="$2"; shift 2 ;;
+        --flash-attn)    FLASH_ATTN="$2"; shift 2 ;;
         --host)          HOST="$2"; shift 2 ;;
         --port)          PORT="$2"; shift 2 ;;
         --server-bin)    SERVER_BIN="$2"; shift 2 ;;
@@ -99,7 +120,10 @@ echo "[serve] model:         $MODEL"
 echo "[serve] parallel:      $PARALLEL"
 echo "[serve] ctx-size:      $CTX_SIZE  (~$(( CTX_SIZE / PARALLEL )) per slot)"
 echo "[serve] n-gpu-layers:  $N_GPU_LAYERS"
+echo "[serve] mmap:          $( [ "$NO_MMAP" = 1 ] && echo 'off (--no-mmap)' || echo 'on' )"
 echo "[serve] reasoning:     $REASONING"
+echo "[serve] cache-ram:     $CACHE_RAM MiB$( [ "$CACHE_RAM" = 0 ] && echo '  (prompt cache disabled)' )"
+echo "[serve] flash-attn:    $FLASH_ATTN"
 echo "[serve] listening on:  http://$HOST:$PORT"
 echo "[serve] base-url ->    http://$HOST:$PORT   (pass this to run_model_bench.py --base-url)"
 
@@ -107,6 +131,10 @@ echo "[serve] base-url ->    http://$HOST:$PORT   (pass this to run_model_bench.
 # them, so per-request context is --ctx-size / N. This must be >= the eval's
 # --num-concurrent (run_model_bench.py) or extra in-flight requests queue.
 # Runs in the foreground; Ctrl-C to stop.
+MMAP_ARGS=()
+if [ "$NO_MMAP" = 1 ]; then
+    MMAP_ARGS+=(--no-mmap)
+fi
 exec "$SERVER_BIN" \
     --model "$MODEL" \
     --host "$HOST" \
@@ -114,4 +142,7 @@ exec "$SERVER_BIN" \
     --ctx-size "$CTX_SIZE" \
     --n-gpu-layers "$N_GPU_LAYERS" \
     --reasoning "$REASONING" \
+    --cache-ram "$CACHE_RAM" \
+    --flash-attn "$FLASH_ATTN" \
+    "${MMAP_ARGS[@]}" \
     --parallel "$PARALLEL" 

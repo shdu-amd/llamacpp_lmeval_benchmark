@@ -58,10 +58,10 @@ def parse_args() -> argparse.Namespace:
                    help="Directory for checkpoint + final results JSON.")
     p.add_argument("--limit", type=int, default=None,
                    help="Evaluate N docs PER SUBTASK (lm-eval semantics). "
-                        "Omit for the full task. Required for live chunked scoring.")
+                        "Omit to cover the full task (auto target = largest "
+                        "leaf's doc count), still checkpointed.")
     p.add_argument("--checkpoint-every", type=int, default=25,
-                   help="Rewrite the rolling results JSON every N docs/subtask "
-                        "(only takes effect when --limit is set).")
+                   help="Rewrite the rolling results JSON every N docs/subtask.")
     p.add_argument("--num-concurrent", type=int, default=1,
                    help="Parallel in-flight requests to the server. >1 needs the "
                         "server launched with matching --parallel slots.")
@@ -83,6 +83,9 @@ def parse_args() -> argparse.Namespace:
                    help="lm-eval few-shot sampling seed.")
     p.add_argument("--request-timeout", type=float, default=600.0,
                    help="Per-request timeout (seconds).")
+    p.add_argument("--max-retries", type=int, default=100,
+                   help="Retries per request on transient failures (e.g. server "
+                        "disconnects while the local server frees memory).")
     p.add_argument("--api-key", default=os.environ.get("LLAMACPP_API_KEY"),
                    help="Bearer token, if the server requires one.")
     return p.parse_args()
@@ -114,8 +117,8 @@ def main() -> int:
               "so chunked live scoring will re-generate every chunk (slow).",
               file=sys.stderr, flush=True)
     if args.limit is None and args.checkpoint_every:
-        print("[run] note: no --limit given -> single full pass, no intermediate "
-              "checkpoints (the running-score ladder needs a known total).",
+        print("[run] note: no --limit given -> full run over every doc, "
+              "checkpointed every N docs/subtask up to the largest leaf.",
               flush=True)
 
     base_url = args.base_url.rstrip("/")
@@ -136,6 +139,7 @@ def main() -> int:
         "gen_kwargs": gen_kwargs,
         "random_seed": args.random_seed,
         "fewshot_seed": args.fewshot_seed,
+        "max_retries": args.max_retries,
         "started_at": utc_now_iso(),
     }
 
@@ -155,6 +159,7 @@ def main() -> int:
         num_concurrent=args.num_concurrent,
         gen_kwargs=gen_kwargs,
         request_timeout=args.request_timeout,
+        max_retries=args.max_retries,
         api_key=args.api_key,
         random_seed=args.random_seed,
         fewshot_seed=args.fewshot_seed,
@@ -164,7 +169,11 @@ def main() -> int:
     except SystemExit:
         raise
     except Exception as e:
-        print(f"[run] FAILED: {e}", file=sys.stderr, flush=True)
+        print(
+            f"[run] FAILED: {type(e).__name__}: {e!r}",
+            file=sys.stderr,
+            flush=True,
+        )
         return 1
 
     print("\n[run] done.", flush=True)
