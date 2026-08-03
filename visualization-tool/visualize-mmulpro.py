@@ -2,14 +2,14 @@
 """Plot per-category MMLU-Pro accuracy across live-scoring checkpoints.
 
 Point this at a run directory (or any parent of one) containing a ``progress.json``
-written by ``lm_eval_runner`` -- a JSON array of checkpoint envelopes. For each
+written by ``lmms_eval_runner`` -- a JSON array of checkpoint envelopes. For each
 category it draws two views over the checkpoint ladder (x-axis = samples scored
 per category so far):
 
-  * Cumulative accuracy: the score lm-eval reports at each checkpoint, taken over
-    *all* samples seen up to that point. This is the raw per-category number.
+  * Cumulative accuracy: the score lmms-eval reports at each checkpoint, taken
+    over *all* samples seen up to that point. This is the raw per-category number.
   * Incremental accuracy: the score contributed by *only* the new samples added
-    between consecutive checkpoints. lm-eval never reports this; we derive it by
+    between consecutive checkpoints. lmms-eval never reports this; we derive it by
     differencing cumulative correct-counts.
 
 So yes -- the per-category score in progress.json is cumulative, not per-chunk.
@@ -84,32 +84,42 @@ def build_series(
 
     # Drop group/aggregate nodes (e.g. the overall "mmlu_pro" roll-up); keep only
     # the leaf subject categories.
-    group_names = set(checkpoints[0].get("lm_eval", {}).get("groups", {}))
+    group_names = set(checkpoints[0].get("lmms_eval", {}).get("groups", {}))
     categories: List[str] = []
-    for name, node in checkpoints[0].get("lm_eval", {}).get("results", {}).items():
+    # alias -> leaf task name, so we can look up per-task counts in n-samples.
+    alias_to_task: Dict[str, str] = {}
+    for name, node in checkpoints[0].get("lmms_eval", {}).get("results", {}).items():
         if name in group_names:
             continue
-        categories.append(node.get("alias", node.get("name", "?")))
+        alias = node.get("alias", node.get("name", "?"))
+        categories.append(alias)
+        alias_to_task[alias] = name
 
     for ckpt in checkpoints:
         prog = ckpt.get("progress", {})
-        x_samples.append(int(prog.get("current_limit_per_subtask", 0)))
-        results = ckpt.get("lm_eval", {}).get("results", {})
+        cur_limit = int(prog.get("current_limit_per_subtask", 0))
+        x_samples.append(cur_limit)
+        lmms = ckpt.get("lmms_eval", {})
+        results = lmms.get("results", {})
+        # lmms-eval reports per-task doc counts here (per-node sample_len is gone).
+        n_samples = lmms.get("n-samples", {})
         by_alias = {
-            n.get("alias", n.get("name", "?")): n
+            n.get("alias", n.get("name", "?")): (nm, n)
             for nm, n in results.items()
             if nm not in group_names
         }
         for cat in categories:
-            node = by_alias.get(cat)
-            if node is None:
+            entry = by_alias.get(cat)
+            if entry is None:
                 cumulative.setdefault(cat, []).append(None)
                 cum_correct.setdefault(cat, []).append(None)
                 cum_n.setdefault(cat, []).append(None)
                 continue
+            task_name, node = entry
             key = _metric_key(node)
             score = float(node[key]) if key else None
-            n = int(node.get("sample_len", 0))
+            eff = n_samples.get(task_name, {}).get("effective")
+            n = int(eff) if eff is not None else cur_limit
             cumulative.setdefault(cat, []).append(score)
             cum_correct.setdefault(cat, []).append(
                 score * n if score is not None else None
