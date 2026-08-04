@@ -40,6 +40,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 
+# Local task-config overrides (loaded via TaskManager include_path). Holds
+# mmlu_pro_std, a filter override that restricts mmlu_pro to the canonical
+# custom-extract filter; see task_overrides/mmlu_pro/mmlu_pro_std.yaml.
+_TASK_OVERRIDES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "task_overrides")
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -138,7 +144,8 @@ class LMMSEvalLiveRunner:
         """Load the task once to validate it and record per-leaf doc counts."""
         from lmms_eval.tasks import TaskManager, get_task_dict
 
-        self._task_manager = TaskManager(verbosity="WARNING")
+        include = _TASK_OVERRIDES_DIR if os.path.isdir(_TASK_OVERRIDES_DIR) else None
+        self._task_manager = TaskManager(verbosity="WARNING", include_path=include)
         if self.task not in self._task_manager.task_index:
             raise SystemExit(
                 f"error: unknown lmms-eval task/group '{self.task}'. "

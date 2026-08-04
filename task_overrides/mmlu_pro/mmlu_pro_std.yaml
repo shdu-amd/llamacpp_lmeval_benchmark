@@ -1,0 +1,44 @@
+# Canonical mmlu_pro filter override.
+#
+# The bundled lmms-eval mmlu_pro (lmms-eval/lmms_eval/tasks/mmlu_pro/) adds two
+# non-standard filters on top of the official one: "strict-match" and
+# "flexible-extract". Only "custom-extract" is the canonical MMLU-Pro filter,
+# matching upstream lm-evaluation-harness
+# (lm-evaluation-harness/lm_eval/tasks/mmlu_pro/_default_template_yaml).
+# The extra "strict-match" regex also crashes lmms-eval's RegexFilter with an
+# IndexError when the answer sits at end-of-string.
+#
+# This group re-uses the bundled leaf subtasks unchanged but overrides their
+# filter_list down to custom-extract only. filter_list is not a group-only key,
+# so it propagates to every subtask. Named mmlu_pro_std (not mmlu_pro) because
+# TaskManager lets bundled defaults win on name collision, so a same-name
+# override would be ignored. Load via TaskManager(include_path=...).
+group: mmlu_pro_std
+task:
+  - mmlu_pro_biology
+  - mmlu_pro_business
+  - mmlu_pro_chemistry
+  - mmlu_pro_computer_science
+  - mmlu_pro_economics
+  - mmlu_pro_engineering
+  - mmlu_pro_health
+  - mmlu_pro_history
+  - mmlu_pro_law
+  - mmlu_pro_math
+  - mmlu_pro_other
+  - mmlu_pro_philosophy
+  - mmlu_pro_physics
+  - mmlu_pro_psychology
+filter_list:
+  - name: "custom-extract"
+    filter:
+      - function: "regex"
+        regex_pattern: 'answer is \(?([ABCDEFGHIJ])\)?'
+      - function: "take_first"
+aggregate_metric_list:
+  - aggregation: mean
+    metric: exact_match
+    weight_by_size: true
+    filter_list: custom-extract
+metadata:
+  version: 1.0

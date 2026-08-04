@@ -16,6 +16,11 @@
 #   ./scripts/launch_llama_server.sh --model models/Qwen3.5-0.8B-Q4_1.gguf
 #   ./scripts/launch_llama_server.sh --model models/foo.gguf --ctx-size 8192 --n-gpu-layers 0
 #
+# For a multimodal model (VLM), also pass the projector so the server accepts
+# image/audio inputs:
+#   ./scripts/launch_llama_server.sh --model models/Qwen2-VL-7B-Q4.gguf \
+#       --mmproj models/Qwen2-VL-7B-mmproj-f16.gguf
+#
 # By default the total --ctx-size is sized so each of the --parallel slots gets
 # --ctx-per-slot tokens of KV cache (default 4 slots x 16384 = 65536). Override
 # per-slot size or slot count directly:
@@ -34,6 +39,10 @@
 set -euo pipefail
 
 MODEL=""
+MMPROJ=""                # optional multimodal projector (--mmproj). When set, the
+                        # server loads a vision/audio projector alongside the model
+                        # so it can accept image/audio inputs (VLMs like Qwen-VL,
+                        # Gemma 3, etc.). Leave empty for text-only models.
 PARALLEL=24               # number of concurrent request slots
 CTX_PER_SLOT=8192       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
 CTX_SIZE=""              # if set explicitly, overrides CTX_PER_SLOT * PARALLEL
@@ -71,6 +80,7 @@ usage() {
 while [ $# -gt 0 ]; do
     case "$1" in
         --model)         MODEL="$2"; shift 2 ;;
+        --mmproj)        MMPROJ="$2"; shift 2 ;;
         --parallel)      PARALLEL="$2"; shift 2 ;;
         --ctx-per-slot)  CTX_PER_SLOT="$2"; shift 2 ;;
         --ctx-size)      CTX_SIZE="$2"; shift 2 ;;
@@ -96,6 +106,10 @@ if [ ! -f "$MODEL" ]; then
     echo "error: model not found: $MODEL" >&2
     exit 2
 fi
+if [ -n "$MMPROJ" ] && [ ! -f "$MMPROJ" ]; then
+    echo "error: mmproj not found: $MMPROJ" >&2
+    exit 2
+fi
 
 # Total ctx is split evenly across --parallel slots by llama.cpp, so to give each
 # slot CTX_PER_SLOT tokens we request CTX_PER_SLOT * PARALLEL total. An explicit
@@ -117,6 +131,7 @@ fi
 
 echo "[serve] binary:        $SERVER_BIN"
 echo "[serve] model:         $MODEL"
+echo "[serve] mmproj:        $( [ -n "$MMPROJ" ] && echo "$MMPROJ" || echo '(none, text-only)' )"
 echo "[serve] parallel:      $PARALLEL"
 echo "[serve] ctx-size:      $CTX_SIZE  (~$(( CTX_SIZE / PARALLEL )) per slot)"
 echo "[serve] n-gpu-layers:  $N_GPU_LAYERS"
@@ -135,8 +150,13 @@ MMAP_ARGS=()
 if [ "$NO_MMAP" = 1 ]; then
     MMAP_ARGS+=(--no-mmap)
 fi
+MMPROJ_ARGS=()
+if [ -n "$MMPROJ" ]; then
+    MMPROJ_ARGS+=(--mmproj "$MMPROJ")
+fi
 exec "$SERVER_BIN" \
     --model "$MODEL" \
+    "${MMPROJ_ARGS[@]}" \
     --host "$HOST" \
     --port "$PORT" \
     --ctx-size "$CTX_SIZE" \
