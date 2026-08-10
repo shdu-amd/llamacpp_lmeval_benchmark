@@ -24,6 +24,14 @@ else
     echo "[active_environment] venv not found at $VENV_DIR — run setup_environmet.sh first" >&2
 fi
 
+# The evalscope submodule checkout at $REPO_ROOT/evalscope shares its name with
+# the installed package (real code is one level down in evalscope/evalscope/).
+# Launching Python from the repo root puts cwd on sys.path[0] and imports that
+# outer folder as an empty namespace package, shadowing the editable install
+# ("cannot import name 'TaskConfig' from 'evalscope'"). Safe-path drops
+# cwd/script-dir from sys.path so imports resolve to the venv install.
+export PYTHONSAFEPATH=1
+
 echo "[active_environment] REPO_ROOT=$REPO_ROOT"
 echo "[active_environment] LLAMACPP_SRC=$LLAMACPP_SRC"
 echo "[active_environment] LLAMACPP_BUILD_DIR=$LLAMACPP_BUILD_DIR"
