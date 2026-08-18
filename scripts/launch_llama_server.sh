@@ -43,11 +43,11 @@ MMPROJ=""                # optional multimodal projector (--mmproj). When set, t
                         # server loads a vision/audio projector alongside the model
                         # so it can accept image/audio inputs (VLMs like Qwen-VL,
                         # Gemma 3, etc.). Leave empty for text-only models.
-PARALLEL=24               # number of concurrent request slots
+PARALLEL=26               # number of concurrent request slots
 CTX_PER_SLOT=8192       # per-slot KV cache; total ctx = CTX_PER_SLOT * PARALLEL
 CTX_SIZE=""              # if set explicitly, overrides CTX_PER_SLOT * PARALLEL
 N_GPU_LAYERS=-1          # -1 = offload all layers to GPU if possible
-NO_MMAP=1               # 1 = pass --no-mmap. On this Strix Halo APU the BIOS carves
+NO_MMAP=0               # 1 = pass --no-mmap. On this Strix Halo APU the BIOS carves
                         # most DRAM into the GPU pool, leaving a small CPU-visible
                         # RAM pool. Default mmap keeps the whole GGUF mapped there as
                         # page cache (double-counting the weights + swapping), so we
@@ -68,6 +68,11 @@ FLASH_ATTN="on"         # llama.cpp -fa/--flash-attn (on|off|auto). Shrinks the 
                         # the memory pressure from many --parallel slots on this
                         # APU. Default 'on'; set 'auto' to let llama.cpp decide, or
                         # 'off' to compare if a backend kernel is slower.
+VERBOSE=1               # 1 = debug mode (--verbose). Turns on llama.cpp's own
+                        # verbose server logging (-v --verbose-prompt --log-timestamps
+                        # --metrics), traces this script with `set -x`, and dumps
+                        # environment/GPU info before launch. Off by default to keep
+                        # the log readable during normal sweeps.
 HOST="${LLAMACPP_HOST:-127.0.0.1}"
 PORT="${LLAMACPP_PORT:-8080}"
 SERVER_BIN="${LLAMACPP_SERVER_BIN:-}"
@@ -90,6 +95,7 @@ while [ $# -gt 0 ]; do
         --reasoning)     REASONING="$2"; shift 2 ;;
         --cache-ram)     CACHE_RAM="$2"; shift 2 ;;
         --flash-attn)    FLASH_ATTN="$2"; shift 2 ;;
+        -v|--verbose)    VERBOSE=1; shift ;;
         --host)          HOST="$2"; shift 2 ;;
         --port)          PORT="$2"; shift 2 ;;
         --server-bin)    SERVER_BIN="$2"; shift 2 ;;
@@ -129,6 +135,7 @@ if [ -z "$SERVER_BIN" ]; then
     fi
 fi
 
+echo "[serve] verbose:       $( [ "$VERBOSE" = 1 ] && echo 'on (debug)' || echo 'off' )"
 echo "[serve] binary:        $SERVER_BIN"
 echo "[serve] model:         $MODEL"
 echo "[serve] mmproj:        $( [ -n "$MMPROJ" ] && echo "$MMPROJ" || echo '(none, text-only)' )"
@@ -142,6 +149,34 @@ echo "[serve] flash-attn:    $FLASH_ATTN"
 echo "[serve] listening on:  http://$HOST:$PORT"
 echo "[serve] base-url ->    http://$HOST:$PORT   (pass this to run_model_bench.py --base-url)"
 
+# In verbose/debug mode, dump the surrounding environment before we hand off to
+# the server: host info, GPU/VRAM state, the model file, and the llama.cpp build.
+# These are the things you usually end up hunting for by hand when a launch
+# misbehaves (wrong binary, model truncated, GPU already occupied, etc.).
+if [ "$VERBOSE" = 1 ]; then
+    echo "----------------------------------------------------------------------"
+    echo "[debug] date:          $(date -Is)"
+    echo "[debug] host:          $(uname -a)"
+    echo "[debug] user/pwd:      $(whoami) @ $(pwd)"
+    echo "[debug] model file:    $(ls -lh "$MODEL" 2>/dev/null || echo '(stat failed)')"
+    [ -n "$MMPROJ" ] && echo "[debug] mmproj file:   $(ls -lh "$MMPROJ" 2>/dev/null || echo '(stat failed)')"
+    echo "[debug] server bin:    $(ls -lh "$SERVER_BIN" 2>/dev/null || echo '(stat failed)')"
+    if "$SERVER_BIN" --version >/dev/null 2>&1; then
+        echo "[debug] server --version:"
+        "$SERVER_BIN" --version 2>&1 | sed 's/^/[debug]   /'
+    fi
+    if command -v rocm-smi >/dev/null 2>&1; then
+        echo "[debug] rocm-smi (VRAM/util):"
+        rocm-smi --showmeminfo vram --showuse 2>&1 | sed 's/^/[debug]   /'
+    elif command -v nvidia-smi >/dev/null 2>&1; then
+        echo "[debug] nvidia-smi:"
+        nvidia-smi 2>&1 | sed 's/^/[debug]   /'
+    fi
+    echo "[debug] free -h:"
+    free -h 2>&1 | sed 's/^/[debug]   /'
+    echo "----------------------------------------------------------------------"
+fi
+
 # --parallel N: number of concurrent request slots. --ctx-size is divided across
 # them, so per-request context is --ctx-size / N. This must be >= the eval's
 # --num-concurrent (run_model_bench.py) or extra in-flight requests queue.
@@ -154,15 +189,40 @@ MMPROJ_ARGS=()
 if [ -n "$MMPROJ" ]; then
     MMPROJ_ARGS+=(--mmproj "$MMPROJ")
 fi
-exec "$SERVER_BIN" \
-    --model "$MODEL" \
-    "${MMPROJ_ARGS[@]}" \
-    --host "$HOST" \
-    --port "$PORT" \
-    --ctx-size "$CTX_SIZE" \
-    --n-gpu-layers "$N_GPU_LAYERS" \
-    --reasoning "$REASONING" \
-    --cache-ram "$CACHE_RAM" \
-    --flash-attn "$FLASH_ATTN" \
-    "${MMAP_ARGS[@]}" \
-    --parallel "$PARALLEL" 
+# Debug flags for llama-server: verbose logs, print prompts, timestamp every log
+# line, and expose the /metrics endpoint for inspecting slot/throughput state.
+VERBOSE_ARGS=()
+if [ "$VERBOSE" = 1 ]; then
+    VERBOSE_ARGS+=(--verbose --log-timestamps --metrics)
+fi
+
+# Build the full command as an array so we can print exactly what runs before
+# exec'ing it — the printed line is copy-paste runnable for manual debugging.
+CMD=(
+    "$SERVER_BIN"
+    --model "$MODEL"
+    "${MMPROJ_ARGS[@]}"
+    --host "$HOST"
+    --port "$PORT"
+    --ctx-size "$CTX_SIZE"
+    --n-gpu-layers "$N_GPU_LAYERS"
+    --reasoning "$REASONING"
+    --cache-ram "$CACHE_RAM"
+    --flash-attn "$FLASH_ATTN"
+    "${MMAP_ARGS[@]}"
+    "${VERBOSE_ARGS[@]}"
+    --parallel "$PARALLEL"
+)
+
+echo "[serve] exec command:"
+printf '  %q' "${CMD[@]}"
+echo
+echo "----------------------------------------------------------------------"
+
+# In verbose mode, trace this script's own shell execution too (set -x). This is
+# a no-op for the exec'd server, but shows any expansion right up to hand-off.
+if [ "$VERBOSE" = 1 ]; then
+    set -x
+fi
+
+exec "${CMD[@]}" 

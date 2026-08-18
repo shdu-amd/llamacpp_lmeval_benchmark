@@ -70,6 +70,12 @@ pip install fastapi
 pip install uvicorn
 pip install sse_starlette
 
+# gguf Python package, required by scripts/weight_generation/*.
+# Install the copy vendored in the llama.cpp tree so it stays in sync with the
+# llama.cpp binaries this repo builds, rather than a mismatched PyPI release.
+echo "[setup] Installing gguf (from llama.cpp/gguf-py)"
+pip install -e "$REPO_ROOT/llama.cpp/gguf-py"
+
 # 4. build the web dashboard (React/Vite -> evalscope/web/dist)
 # The `evalscope service` dashboard is a compiled SPA served from web/dist.
 # Without dist, Flask serves only the JSON API and every page URL 404s
