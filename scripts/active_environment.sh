@@ -32,6 +32,16 @@ fi
 # cwd/script-dir from sys.path so imports resolve to the venv install.
 export PYTHONSAFEPATH=1
 
+# PYTHONSAFEPATH also hides llama.cpp's own `conversion/` package from its
+# convert_*.py scripts, so Python falls back to an unrelated PyPI package named
+# `conversion`. Use this wrapper for llama.cpp conversion scripts: it turns
+# safe-path off for that single process only.
+#   usage: llamacpp_convert <model_dir> [convert_hf_to_gguf.py args...]
+llamacpp_convert() {
+    env -u PYTHONSAFEPATH python3 "$LLAMACPP_SRC/convert_hf_to_gguf.py" "$@"
+}
+export -f llamacpp_convert
+
 echo "[active_environment] REPO_ROOT=$REPO_ROOT"
 echo "[active_environment] LLAMACPP_SRC=$LLAMACPP_SRC"
 echo "[active_environment] LLAMACPP_BUILD_DIR=$LLAMACPP_BUILD_DIR"
